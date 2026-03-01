@@ -116,23 +116,52 @@ if [[ "$DELETE_MODE" == true ]]; then
   exit 0
 fi
 
-# --- Requisitos Docker ---
-if ! require_cmd docker; then
-  err "Docker no está en PATH. En WSL2, activa Docker Desktop (WSL2 backend) e integra tu distro."
+# --- Requisitos Docker (nativo o con sudo) ---
+if ! require_cmd "$DOCKER_CMD"; then
+  # Si docker no está en PATH, prueba con sudo docker
+  if command -v sudo >/dev/null 2>&1; then
+    DOCKER_CMD="sudo docker"
+  fi
+fi
+
+# Si sigue sin existir el binario seleccionado, error
+if ! require_cmd ${DOCKER_CMD%% *}; then
+  err "No encuentro el CLI de Docker en PATH. Instala Docker (engine + cli) en tu Ubuntu/WSL2 o exporta DOCKER_CMD."
   exit 1
 fi
-if ! docker version >/dev/null 2>&1; then
-  err "No se puede conectar al daemon de Docker. Abre Docker Desktop y reintenta."
+
+# Intento 1: comprobar el daemon
+if ! $DOCKER_CMD version >/dev/null 2>&1; then
+  # (Opcional) intenta arrancar el servicio docker si existe
+  if command -v service >/dev/null 2>&1; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo service docker start >/dev/null 2>&1 || true
+    else
+      service docker start >/dev/null 2>&1 || true
+    fi
+  fi
+  # Intento 2: reintenta sin/sudo
+  if ! $DOCKER_CMD version >/dev/null 2>&1; then
+    # Si no era con sudo, reintenta con sudo
+    if [[ "$DOCKER_CMD" == "docker" ]] && command -v sudo >/dev/null 2>&1; then
+      DOCKER_CMD="sudo docker"
+    fi
+  fi
+fi
+
+# Intento final
+if ! $DOCKER_CMD version >/dev/null 2>&1; then
+  err "No se puede conectar al daemon de Docker. Asegúrate de que dockerd está corriendo en WSL2 (p. ej.: 'sudo service docker start') y que tu usuario está en el grupo 'docker'."
   exit 1
 fi
+
+# Nota WSL2 (sólo consejo de rendimiento)
 if is_wsl; then
-  warn "WSL2 detectado. Asegúrate de tener Docker Desktop en ejecución y WSL integration habilitada."
   CURR=$(pwd)
   if [[ "$CURR" == /mnt/* ]]; then
     warn "Estás en $CURR. Para mejor rendimiento, ejecuta desde tu home WSL (~)."
   fi
 fi
-
 # --- Instalar herramientas si faltan ---
 if ! require_cmd k3d; then
   log "Instalando k3d..."
