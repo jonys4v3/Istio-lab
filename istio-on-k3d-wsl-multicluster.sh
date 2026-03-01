@@ -66,6 +66,9 @@ EOF
 
 DELETE_MODE=false
 
+# --- Docker CLI (docker nativo / sudo docker) ---
+: "${DOCKER_CMD:=docker}"   # define DOCKER_CMD si no existe (compatible con 'set -u')
+
 # Parse args
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -117,41 +120,45 @@ if [[ "$DELETE_MODE" == true ]]; then
 fi
 
 # --- Requisitos Docker (nativo o con sudo) ---
-if ! require_cmd "$DOCKER_CMD"; then
-  # Si docker no está en PATH, prueba con sudo docker
-  if command -v sudo >/dev/null 2>&1; then
+
+# helper: existe el comando?
+cmd_exists() { command -v "$1" >/dev/null 2>&1; }
+
+# Si DOCKER_CMD es 'docker' y no existe, intenta 'sudo docker'
+if ! cmd_exists "${DOCKER_CMD%% *}"; then
+  if cmd_exists sudo; then
     DOCKER_CMD="sudo docker"
   fi
 fi
 
-# Si sigue sin existir el binario seleccionado, error
-if ! require_cmd ${DOCKER_CMD%% *}; then
+# Si sigue sin existir el binario base (docker o sudo), error
+if ! cmd_exists "${DOCKER_CMD%% *}"; then
   err "No encuentro el CLI de Docker en PATH. Instala Docker (engine + cli) en tu Ubuntu/WSL2 o exporta DOCKER_CMD."
   exit 1
 fi
 
-# Intento 1: comprobar el daemon
+# Intento 1: ¿responde el daemon?
 if ! $DOCKER_CMD version >/dev/null 2>&1; then
-  # (Opcional) intenta arrancar el servicio docker si existe
-  if command -v service >/dev/null 2>&1; then
-    if command -v sudo >/dev/null 2>&1; then
+  # (Opcional) intenta arrancar el servicio docker si está disponible
+  if cmd_exists service; then
+    if cmd_exists sudo; then
       sudo service docker start >/dev/null 2>&1 || true
     else
       service docker start >/dev/null 2>&1 || true
     fi
   fi
-  # Intento 2: reintenta sin/sudo
-  if ! $DOCKER_CMD version >/dev/null 2>&1; then
-    # Si no era con sudo, reintenta con sudo
-    if [[ "$DOCKER_CMD" == "docker" ]] && command -v sudo >/dev/null 2>&1; then
-      DOCKER_CMD="sudo docker"
-    fi
+fi
+
+# Intento 2: si DOCKER_CMD era 'docker', reintenta con 'sudo docker'
+if ! $DOCKER_CMD version >/dev/null 2>&1; then
+  if [[ "$DOCKER_CMD" == "docker" ]] && cmd_exists sudo; then
+    DOCKER_CMD="sudo docker"
   fi
 fi
 
 # Intento final
 if ! $DOCKER_CMD version >/dev/null 2>&1; then
-  err "No se puede conectar al daemon de Docker. Asegúrate de que dockerd está corriendo en WSL2 (p. ej.: 'sudo service docker start') y que tu usuario está en el grupo 'docker'."
+  err "No se puede conectar al daemon de Docker. Asegúrate de que dockerd está corriendo en WSL2 (p.ej.: 'sudo service docker start') y que tu usuario está en el grupo 'docker'."
   exit 1
 fi
 
@@ -303,16 +310,16 @@ if [[ "$CLUSTERS" -eq 2 ]]; then
   pushd samples/multicluster >/dev/null
   export CLUSTER=${CLUSTER1_NAME}
   export NETWORK=${NETWORK1}
-  ./gen-eastwest-gateway.sh --mesh-network "$NETWORK" > /tmp/eastwest-${CLUSTER1_NAME}.yaml
-  kubectl --context "$CTX1" -n istio-system apply -f /tmp/eastwest-${CLUSTER1_NAME}.yaml
-  kubectl --context "$CTX1" -n istio-system rollout status deploy/istio-eastwestgateway --timeout=10m || true
+  samples/multicluster/gen-eastwest-gateway.sh --network "${NETWORK1}" \
+    | istioctl install --context="${CTX1}" -y -f -
+  kubectl --context "${CTX1}" -n istio-system rollout status deploy/istio-eastwestgateway --timeout=10m || true
 
   # Generar manifiesto gateway para cluster2
   export CLUSTER=${CLUSTER2_NAME}
   export NETWORK=${NETWORK2}
-  ./gen-eastwest-gateway.sh --mesh-network "$NETWORK" > /tmp/eastwest-${CLUSTER2_NAME}.yaml
-  kubectl --context "$CTX2" -n istio-system apply -f /tmp/eastwest-${CLUSTER2_NAME}.yaml
-  kubectl --context "$CTX2" -n istio-system rollout status deploy/istio-eastwestgateway --timeout=10m || true
+  samples/multicluster/gen-eastwest-gateway.sh --network "${NETWORK2}" \
+    | istioctl install --context="${CTX2}" -y -f -
+  kubectl --context "${CTX2}" -n istio-system rollout status deploy/istio-eastwestgateway --timeout=10m || true
 
   # Exponer istiod para descubrimiento entre clusters
   kubectl --context "$CTX1" -n istio-system apply -f expose-istiod.yaml || true
