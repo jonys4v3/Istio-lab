@@ -2,7 +2,7 @@
 
 Este documento describe **qué hacen los scripts**, **cómo instalarlos/ejecutarlos** y **requisitos de CPU/RAM** para correr **Istio** sobre **K3d** (K3s en Docker), incluyendo **modo multicluster** y compatibilidad con **WSL2**.
 
-> **Contexto**: Istio necesita recursos y primitivas de Kubernetes (CRDs, webhooks, sidecars, etc.), por lo que **no se ejecuta sólo con Docker**; usamos **K3d** para simular uno o varios clusters dentro de contenedores Docker. La instalación de Istio puede hacerse con `istioctl` o con Helm; en esta guía usamos `istioctl` por simplicidad. (Plataforma K3d oficial e Istio docs) citeturn5search7
+> **Contexto**: Istio necesita recursos y primitivas de Kubernetes (CRDs, webhooks, sidecars, etc.), por lo que **no se ejecuta sólo con Docker**; usamos **K3d** para simular uno o varios clusters dentro de contenedores Docker. La instalación de Istio puede hacerse con `istioctl` o con Helm; en esta guía usamos `istioctl` por simplicidad. (Plataforma K3d oficial e Istio docs)
 
 ---
 
@@ -35,17 +35,17 @@ Este documento describe **qué hacen los scripts**, **cómo instalarlos/ejecutar
 - Despliega **east‑west gateways**, **exposición de istiod**, **remote‑secrets** y **MeshNetworks** para descubrimiento/tráfico **cross‑cluster**.
 - Despliega **Bookinfo** (por defecto en `cluster1`) y **add‑ons** opcionales.
 
-**Objetivo**: practicar **multicluster Istio** en local, el patrón recomendado cuando necesitas alta disponibilidad del control plane o clusters en redes separadas. (Elección de topología multi‑primary vs primary‑remote) citeturn5search9
+**Objetivo**: practicar **multicluster Istio** en local, el patrón recomendado cuando necesitas alta disponibilidad del control plane o clusters en redes separadas. (Elección de topología multi‑primary vs primary‑remote)
 
 ---
 
 ## 2) Requisitos previos
 
-- **Docker Desktop** (Windows) con **WSL2 backend** habilitado y WSL Integration para tu distro (Ubuntu). (Requisitos de K3d + Docker) citeturn5search7
+- **Docker Desktop** (Windows) con **WSL2 backend** habilitado y WSL Integration para tu distro (Ubuntu). (Requisitos de K3d + Docker)
 - **WSL2** actualizado (en Windows 10/11) y distro **Ubuntu** o similar.
 - El script instala si faltan: **k3d**, **kubectl**, **istioctl**.
 
-> Nota: K3d es un wrapper para ejecutar **K3s** (Kubernetes ligero) en Docker, ideal para laboratorios locales. citeturn5search7
+> Nota: K3d es un wrapper para ejecutar **K3s** (Kubernetes ligero) en Docker, ideal para laboratorios locales.
 
 ---
 
@@ -55,7 +55,7 @@ Este documento describe **qué hacen los scripts**, **cómo instalarlos/ejecutar
 
 - `istiod`: **500m CPU** y **2048Mi RAM** (request). 
 - `ingress/egress gateway`: **100m CPU** y **128Mi RAM** (request) cada uno.
-- `proxy sidecar` (por pod): **10m CPU** y **10Mi RAM** (request). (Tabla de requisitos mínimos por componente) citeturn5search10
+- `proxy sidecar` (por pod): **10m CPU** y **10Mi RAM** (request). (Tabla de requisitos mínimos por componente)
 
 **Single‑cluster (con Bookinfo y add‑ons):**
 - **Mínimo**: 4 vCPU, **8 GB RAM**.
@@ -66,22 +66,22 @@ Este documento describe **qué hacen los scripts**, **cómo instalarlos/ejecutar
 - **Recomendado**: 8–10 vCPU, **16 GB RAM**. 
 - **Ideal** (observabilidad completa y pruebas de tráfico): 12 vCPU, **24–32 GB RAM**.
 
-> Un repo público que automatiza K3D+Istio multicluster reporta ~**4 vCPU / 12GiB** en idle para un stand de pruebas (3 clusters). Para 2 clusters, la recomendación práctica es 8–10 vCPU y ~16 GB para ir fluido. citeturn5search8
+> Un repo público que automatiza K3D+Istio multicluster reporta ~**4 vCPU / 12GiB** en idle para un stand de pruebas (3 clusters). Para 2 clusters, la recomendación práctica es 8–10 vCPU y ~16 GB para ir fluido.
 
 ---
 
 ## 4) Instalación y ejecución
 
 ### 4.1 Descargar scripts
-- **Single cluster (WSL2)**: [istio-on-k3d-wsl.sh](citeturn4file5)
-- **Multicluster (WSL2)**: [istio-on-k3d-wsl-multicluster.sh](citeturn4file4)
-- **Genérico Linux (single)**: [istio-on-k3d.sh](citeturn4file6)
+- **Single cluster (WSL2)**: [istio-on-k3d-wsl.sh](istio-on-k3d-wsl.sh)
+- **Multicluster (WSL2)**: [istio-on-k3d-wsl-multicluster.sh](istio-on-k3d-wsl-multicluster.sh)
+- **Genérico Linux (single)**: [istio-on-k3d.sh](istio-on-k3d.sh)
 
 > Marca como ejecutable si hiciera falta: `chmod +x <script>.sh`
 
 ### 4.2 Ejecutar en **WSL2** (recomendado)
 
-1. **Arranca Docker Desktop** en Windows (backend WSL2 + WSL Integration). citeturn5search7
+1. **Arranca Docker Desktop** en Windows (backend WSL2 + WSL Integration).
 2. Abre **Ubuntu (WSL2)** y navega a tu **`$HOME`** (evita `/mnt/c`).
 3. Ejecuta **single cluster**:
    ```bash
@@ -136,7 +136,7 @@ bash istio-on-k3d-wsl-multicluster.sh --delete
 ## 5) ¿Qué instalan y configuran exactamente?
 
 ### 5.1 Single cluster (WSL2 y genérico)
-1. **Herramientas**: instala `k3d`, `kubectl` y `istioctl` si faltan. (K3d y kubectl como prerequisitos) citeturn5search7
+1. **Herramientas**: instala `k3d`, `kubectl` y `istioctl` si faltan. (K3d y kubectl como prerequisitos)
 2. **Cluster K3d**: crea 1 server + 2 agents y expone `80/443` vía un **load balancer** mapeado a puertos del host.
 3. **Istio**: `istioctl install --set profile=<perfil>` instala **CRDs**, **istiod**, **gateways**.
 4. **Namespace `demo`**: etiqueta `istio-injection=enabled` para inyección automática de Envoy.
@@ -145,11 +145,11 @@ bash istio-on-k3d-wsl-multicluster.sh --delete
 
 ### 5.2 Multicluster (WSL2)
 1. Crea **2 clusters** en una **red Docker** compartida.
-2. Instala **Istio multi‑primary** con `values.global.multiCluster.clusterName` y `values.global.network` distintos por cluster. (Selección de topología: multi‑primary) citeturn5search9
-3. Genera y aplica **east‑west gateways** (scripts de `samples/multicluster` de Istio). (Guía de plataforma K3d en Istio) citeturn5search7
+2. Instala **Istio multi‑primary** con `values.global.multiCluster.clusterName` y `values.global.network` distintos por cluster. (Selección de topología: multi‑primary)
+3. Genera y aplica **east‑west gateways** (scripts de `samples/multicluster` de Istio). (Guía de plataforma K3d en Istio)
 4. Expone **istiod** en ambos clusters para descubrimiento.
 5. Crea **remote‑secrets** cruzados (`istioctl x create-remote-secret`).
-6. Construye y aplica **`MeshNetworks`** con las direcciones de ambos east‑west gateways (puerto **15443** por defecto para mTLS cross‑network). (Prácticas comunes en multicluster) citeturn5search9
+6. Construye y aplica **`MeshNetworks`** con las direcciones de ambos east‑west gateways (puerto **15443** por defecto para mTLS cross‑network). (Prácticas comunes en multicluster)
 7. Despliega **Bookinfo** en el cluster elegido y (opcional) los **add‑ons**.
 
 ---
@@ -166,7 +166,7 @@ swap=0
 ```
 
 - Mantén los proyectos dentro de tu **`$HOME` en WSL** (mejor I/O) y evita `/mnt/c`.
-- Asegúrate de tener **Docker Desktop** abierto antes de ejecutar los scripts. (K3d requiere Docker) citeturn5search7
+- Asegúrate de tener **Docker Desktop** abierto antes de ejecutar los scripts. (K3d requiere Docker)
 
 ---
 
@@ -194,7 +194,7 @@ xdg-open http://localhost:9080/productpage  # cluster2 si desplegaste ahí
 
 ## 8) Problemas comunes
 
-- **Docker no responde desde WSL2**: abre Docker Desktop en Windows y revisa *Settings → Resources → WSL Integration*. (Requisito/Integración K3d) citeturn5search7
+- **Docker no responde desde WSL2**: abre Docker Desktop en Windows y revisa *Settings → Resources → WSL Integration*. (Requisito/Integración K3d)
 - **Recursos insuficientes**: sube límites en `.wslconfig` (ver sección 6) y cierra/reabre WSL: `wsl --shutdown`.
 - **East‑west sin IP/hostname**: si el `LoadBalancer` no expone IP (entorno local), usa el **hostname** del servicio o ajusta `MeshNetworks` manualmente.
 
@@ -202,7 +202,7 @@ xdg-open http://localhost:9080/productpage  # cluster2 si desplegaste ahí
 
 ## 9) Referencias
 
-- **Istio — k3d (plataforma)**: pasos y prerequisitos de plataforma K3d, instalación con Helm/istio. citeturn5search7
-- **Topologías Multicluster Istio (multi‑primary vs primary‑remote)**: guía de planificación y trade‑offs. citeturn5search9
-- **Requisitos de CPU/RAM por componente de Istio** (referencia de dimensionamiento). citeturn5search10
-- **Experiencia práctica multicluster K3D+Istio (consumo en idle)**. citeturn5search8
+- **Istio — k3d (plataforma)**: pasos y prerequisitos de plataforma K3d, instalación con Helm/istio.
+- **Topologías Multicluster Istio (multi‑primary vs primary‑remote)**: guía de planificación y trade‑offs.
+- **Requisitos de CPU/RAM por componente de Istio** (referencia de dimensionamiento).
+- **Experiencia práctica multicluster K3D+Istio (consumo en idle)**.
