@@ -120,26 +120,24 @@ if [[ "$DELETE_MODE" == true ]]; then
 fi
 
 # --- Requisitos Docker (nativo o con sudo) ---
-
 # helper: existe el comando?
 cmd_exists() { command -v "$1" >/dev/null 2>&1; }
 
-# Si DOCKER_CMD es 'docker' y no existe, intenta 'sudo docker'
 if ! cmd_exists "${DOCKER_CMD%% *}"; then
   if cmd_exists sudo; then
     DOCKER_CMD="sudo docker"
   fi
 fi
 
-# Si sigue sin existir el binario base (docker o sudo), error
 if ! cmd_exists "${DOCKER_CMD%% *}"; then
   err "No encuentro el CLI de Docker en PATH. Instala Docker (engine + cli) en tu Ubuntu/WSL2 o exporta DOCKER_CMD."
   exit 1
 fi
 
-# Intento 1: ¿responde el daemon?
-if ! $DOCKER_CMD version >/dev/null 2>&1; then
-  # (Opcional) intenta arrancar el servicio docker si está disponible
+read -r -a DOCKER_CMD_ARGS <<< "$DOCKER_CMD"
+run_docker() { "${DOCKER_CMD_ARGS[@]}" "$@"; }
+
+if ! run_docker version >/dev/null 2>&1; then
   if cmd_exists service; then
     if cmd_exists sudo; then
       sudo service docker start >/dev/null 2>&1 || true
@@ -149,32 +147,59 @@ if ! $DOCKER_CMD version >/dev/null 2>&1; then
   fi
 fi
 
-# Intento 2: si DOCKER_CMD era 'docker', reintenta con 'sudo docker'
-if ! $DOCKER_CMD version >/dev/null 2>&1; then
-  if [[ "$DOCKER_CMD" == "docker" ]] && cmd_exists sudo; then
+if ! run_docker version >/dev/null 2>&1; then
+  if [[ "${DOCKER_CMD_ARGS[0]}" == "docker" ]] && cmd_exists sudo; then
     DOCKER_CMD="sudo docker"
+    read -r -a DOCKER_CMD_ARGS <<< "$DOCKER_CMD"
   fi
 fi
 
-# Intento final
-if ! $DOCKER_CMD version >/dev/null 2>&1; then
+if ! run_docker version >/dev/null 2>&1; then
   err "No se puede conectar al daemon de Docker. Asegúrate de que dockerd está corriendo en WSL2 (p.ej.: 'sudo service docker start') y que tu usuario está en el grupo 'docker'."
   exit 1
 fi
 
-# Nota WSL2 (sólo consejo de rendimiento)
 if is_wsl; then
   CURR=$(pwd)
   if [[ "$CURR" == /mnt/* ]]; then
     warn "Estás en $CURR. Para mejor rendimiento, ejecuta desde tu home WSL (~)."
   fi
 fi
-# --- Instalar herramientas si faltan ---
-if ! require_cmd k3d; then
-  log "Instalando k3d..."
-  curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+cleanup() {
+  rm -rf "${WORKDIR:-}" "${TMPDL:-}" "${MESHNETWORKS_FILE:-}" || true
+}
+trap cleanup EXIT
+
+if [[ "$CLUSTERS" -ne 1 && "$CLUSTERS" -ne 2 ]]; then
+  err "El valor de --clusters debe ser 1 o 2."
+  usage
+  exit 1
 fi
-if ! require_cmd kubectl; then
+
+if [[ "$INSTALL_BOOKINFO_CLUSTER" == "cluster1" ]]; then
+  INSTALL_BOOKINFO_CLUSTER="$CLUSTER1_NAME"
+elif [[ "$INSTALL_BOOKINFO_CLUSTER" == "cluster2" ]]; then
+  INSTALL_BOOKINFO_CLUSTER="$CLUSTER2_NAME"
+fi
+
+if [[ "$INSTALL_BOOKINFO_CLUSTER" != "$CLUSTER1_NAME" && "$INSTALL_BOOKINFO_CLUSTER" != "$CLUSTER2_NAME" ]]; then
+  err "Valor inválido para --bookinfo-on: $INSTALL_BOOKINFO_CLUSTER. Usa cluster1 o cluster2."
+  usage
+  exit 1
+fi
+
+ensure_path() {
+  mkdir -p "$HOME/.local/bin"
+  export PATH="$HOME/.local/bin:$PATH"
+}
+
+cluster_exists() {
+  local name="$1"
+  k3d cluster list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$name"
+}
+
+install_kubectl() {
   log "Instalando kubectl (última estable)..."
   ARCH=$(uname -m)
   case "$ARCH" in
@@ -184,13 +209,13 @@ if ! require_cmd kubectl; then
   esac
   curl -sL "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/$(uname | tr '[:upper:]' '[:lower:]')/${ARCH_BIN}/kubectl" -o kubectl
   chmod +x kubectl
-  mkdir -p "$HOME/.local/bin" && mv kubectl "$HOME/.local/bin/"
-  export PATH="$HOME/.local/bin:$PATH"
-fi
-if ! require_cmd istioctl; then
+  ensure_path
+  mv kubectl "$HOME/.local/bin/"
+}
+
+install_istioctl() {
   log "Descargando Istio (estable) e instalando istioctl..."
   WORKDIR=$(mktemp -d)
-  trap 'rm -rf "$WORKDIR"' EXIT
   pushd "$WORKDIR" >/dev/null
   curl -sL https://istio.io/downloadIstio | sh -
   ISTIO_DIR=$(find . -maxdepth 1 -type d -name "istio-*" | head -n1)
@@ -198,53 +223,66 @@ if ! require_cmd istioctl; then
     err "No se encontró el directorio de Istio."
     exit 1
   fi
-  mkdir -p "$HOME/.local/bin" && cp "$ISTIO_DIR/bin/istioctl" "$HOME/.local/bin/"
-  export PATH="$HOME/.local/bin:$PATH"
+  ensure_path
+  cp "$ISTIO_DIR/bin/istioctl" "$HOME/.local/bin/"
   popd >/dev/null
+}
+
+if ! require_cmd k3d; then
+  log "Instalando k3d..."
+  curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
 fi
+if ! require_cmd kubectl; then
+  install_kubectl
+fi
+if ! require_cmd istioctl; then
+  install_istioctl
+fi
+
+ensure_path
 
 log "k3d: $(k3d version | head -n1)"
 log "kubectl: $(kubectl version --client --short 2>/dev/null || true)"
 log "istioctl: $(istioctl version --remote=false 2>/dev/null || true)"
 
-# --- Red Docker compartida para multicluster ---
 if [[ "$CLUSTERS" -eq 2 ]]; then
-  if ! docker network inspect "$SHARED_DOCKER_NET" >/dev/null 2>&1; then
+  if ! run_docker network inspect "$SHARED_DOCKER_NET" >/dev/null 2>&1; then
     log "Creando red Docker compartida: ${SHARED_DOCKER_NET}"
-    docker network create "$SHARED_DOCKER_NET"
+    run_docker network create "$SHARED_DOCKER_NET"
   else
     warn "Red Docker compartida '${SHARED_DOCKER_NET}' ya existe."
   fi
 fi
 
-# --- Crear cluster1 ---
-if k3d cluster list | grep -q "^${CLUSTER1_NAME}\>"; then
+if cluster_exists "$CLUSTER1_NAME"; then
   warn "El cluster '${CLUSTER1_NAME}' ya existe."
 else
   log "Creando cluster '${CLUSTER1_NAME}'..."
   if [[ "$CLUSTERS" -eq 2 ]]; then
     k3d cluster create "$CLUSTER1_NAME" \
-      --agents 2 --servers 1 \
+      --servers 1 --agents 2 \
       --network "$SHARED_DOCKER_NET" \
+      --wait \
       -p "${HTTP1}:80@loadbalancer" \
       -p "${HTTPS1}:443@loadbalancer"
   else
     k3d cluster create "$CLUSTER1_NAME" \
-      --agents 2 --servers 1 \
+      --servers 1 --agents 2 \
+      --wait \
       -p "${HTTP1}:80@loadbalancer" \
       -p "${HTTPS1}:443@loadbalancer"
   fi
 fi
 
-# --- Crear cluster2 si procede ---
 if [[ "$CLUSTERS" -eq 2 ]]; then
-  if k3d cluster list | grep -q "^${CLUSTER2_NAME}\>"; then
+  if cluster_exists "$CLUSTER2_NAME"; then
     warn "El cluster '${CLUSTER2_NAME}' ya existe."
   else
     log "Creando cluster '${CLUSTER2_NAME}'..."
     k3d cluster create "$CLUSTER2_NAME" \
-      --agents 2 --servers 1 \
+      --servers 1 --agents 2 \
       --network "$SHARED_DOCKER_NET" \
+      --wait \
       -p "${HTTP2}:80@loadbalancer" \
       -p "${HTTPS2}:443@loadbalancer"
   fi
@@ -253,7 +291,6 @@ fi
 CTX1="k3d-${CLUSTER1_NAME}"
 CTX2="k3d-${CLUSTER2_NAME}"
 
-# --- Instalar Istio en cluster1 ---
 log "Instalando Istio en ${CLUSTER1_NAME} (perfil=${ISTIO_PROFILE})..."
 kubectl config use-context "$CTX1" >/dev/null
 istioctl install -y \
@@ -262,8 +299,8 @@ istioctl install -y \
   --set values.global.network="${NETWORK1}"
 
 kubectl -n istio-system wait --for=condition=Available deployment --all --timeout=10m
+istioctl verify-install --context "$CTX1" --skip-confirmation || true
 
-# --- Instalar Istio en cluster2 si multicluster ---
 if [[ "$CLUSTERS" -eq 2 ]]; then
   log "Instalando Istio en ${CLUSTER2_NAME} (perfil=${ISTIO_PROFILE})..."
   kubectl config use-context "$CTX2" >/dev/null
@@ -272,27 +309,23 @@ if [[ "$CLUSTERS" -eq 2 ]]; then
     --set values.global.multiCluster.clusterName="${CLUSTER2_NAME}" \
     --set values.global.network="${NETWORK2}"
   kubectl -n istio-system wait --for=condition=Available deployment --all --timeout=10m
+  istioctl verify-install --context "$CTX2" --skip-confirmation || true
 fi
 
-# --- Preparar namespaces demo ---
 for CTX in "$CTX1" "$CTX2"; do
-  if kubectl --context "$CTX" get ns demo >/dev/null 2>&1; then
-    :
-  else
-    kubectl --context "$CTX" create namespace demo
+  if [[ "$CTX" == "$CTX2" && "$CLUSTERS" -eq 1 ]]; then
+    continue
   fi
+  kubectl --context "$CTX" get namespace demo >/dev/null 2>&1 || kubectl --context "$CTX" create namespace demo
   kubectl --context "$CTX" label namespace demo istio-injection=enabled --overwrite
-  # Etiqueta de red a nivel de namespace/control-plane (opcional pero útil)
-  kubectl --context "$CTX" label namespace istio-system topology.istio.io/network="${NETWORK1}" --overwrite || true
-  # Nota: Para CTX2, se sobreescribirá a NETWORK2 más abajo si existe
-  if [[ "$CTX" == "$CTX2" ]]; then
+  if [[ "$CTX" == "$CTX1" ]]; then
+    kubectl --context "$CTX" label namespace istio-system topology.istio.io/network="${NETWORK1}" --overwrite || true
+  else
     kubectl --context "$CTX" label namespace istio-system topology.istio.io/network="${NETWORK2}" --overwrite || true
   fi
 done
 
-# --- Descargar samples Istio una vez para usar generadores ---
 TMPDL=$(mktemp -d)
-trap 'rm -rf "$TMPDL"' EXIT
 pushd "$TMPDL" >/dev/null
 curl -sL https://istio.io/downloadIstio | sh -
 ISTIO_S_DIR=$(find . -maxdepth 1 -type d -name "istio-*" | head -n1)
@@ -302,28 +335,27 @@ if [[ -z "$ISTIO_S_DIR" ]]; then
 fi
 cd "$ISTIO_S_DIR"
 
-# --- Multicluster wiring ---
 if [[ "$CLUSTERS" -eq 2 ]]; then
   log "Configurando east-west gateway en ambos clusters..."
-
-  # Generar manifiesto gateway para cluster1
   pushd samples/multicluster >/dev/null
-  export CLUSTER=${CLUSTER1_NAME}
-  export NETWORK=${NETWORK1}
-  samples/multicluster/gen-eastwest-gateway.sh --network "${NETWORK1}" \
-    | istioctl install --context="${CTX1}" -y -f -
+
+  export CLUSTER="${CLUSTER1_NAME}"
+  export NETWORK="${NETWORK1}"
+  ./gen-eastwest-gateway.sh --network "${NETWORK1}" | istioctl install --context="${CTX1}" -y -f -
   kubectl --context "${CTX1}" -n istio-system rollout status deploy/istio-eastwestgateway --timeout=10m || true
 
-  # Generar manifiesto gateway para cluster2
-  export CLUSTER=${CLUSTER2_NAME}
-  export NETWORK=${NETWORK2}
-  samples/multicluster/gen-eastwest-gateway.sh --network "${NETWORK2}" \
-    | istioctl install --context="${CTX2}" -y -f -
+  export CLUSTER="${CLUSTER2_NAME}"
+  export NETWORK="${NETWORK2}"
+  ./gen-eastwest-gateway.sh --network "${NETWORK2}" | istioctl install --context="${CTX2}" -y -f -
   kubectl --context "${CTX2}" -n istio-system rollout status deploy/istio-eastwestgateway --timeout=10m || true
 
-  # Exponer istiod para descubrimiento entre clusters
-  kubectl --context "$CTX1" -n istio-system apply -f expose-istiod.yaml || true
-  kubectl --context "$CTX2" -n istio-system apply -f expose-istiod.yaml || true
+  if [[ -f expose-istiod.yaml ]]; then
+    kubectl --context "$CTX1" -n istio-system apply -f expose-istiod.yaml || true
+    kubectl --context "$CTX2" -n istio-system apply -f expose-istiod.yaml || true
+  else
+    warn "No se encontró expose-istiod.yaml en samples/multicluster; omitiendo exposición de istiod."
+  fi
+
   popd >/dev/null
 
   log "Creando remote-secrets..."
@@ -337,7 +369,8 @@ if [[ "$CLUSTERS" -eq 2 ]]; then
     warn "No se logró resolver IP/hostname de eastwest gateways. Continuaré, pero MeshNetworks puede requerir edición manual."
   fi
 
-  cat >/tmp/meshnetworks.yaml <<YAML
+  MESHNETWORKS_FILE=$(mktemp)
+  cat >"$MESHNETWORKS_FILE" <<YAML
 apiVersion: networking.istio.io/v1alpha1
 kind: MeshNetworks
 networks:
@@ -355,12 +388,10 @@ networks:
       port: 15443
 YAML
 
-  # Aplicar MeshNetworks en ambos clusters
-  kubectl --context "$CTX1" apply -f /tmp/meshnetworks.yaml || true
-  kubectl --context "$CTX2" apply -f /tmp/meshnetworks.yaml || true
+  kubectl --context "$CTX1" apply -f "$MESHNETWORKS_FILE" || true
+  kubectl --context "$CTX2" apply -f "$MESHNETWORKS_FILE" || true
 fi
 
-# --- Despliegue de Bookinfo ---
 TARGET_CTX="$CTX1"
 if [[ "$INSTALL_BOOKINFO_CLUSTER" == "$CLUSTER2_NAME" ]]; then
   TARGET_CTX="$CTX2"
